@@ -2,6 +2,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.concurrent.TimeUnit;
 
 public class validator {
@@ -9,17 +10,33 @@ public class validator {
     private static final int RUN_TIMEOUT_SECONDS = 5;
 
     public static void main(String[] args) throws IOException, InterruptedException {
-        if (args.length != 3) {
-            System.err.println("Usage: java validator <submission.java> <01.in> <01.out>");
+        if (args.length != 2) {
+            System.err.println("Usage: java validator <submission.java> <problem-folder>");
             System.exit(2);
         }
 
         Path submission = Path.of(args[0]).toAbsolutePath();
-        Path input = Path.of(args[1]).toAbsolutePath();
-        Path expected = Path.of(args[2]).toAbsolutePath();
-        for (Path file : new Path[] {submission, input, expected}) {
-            if (!Files.isRegularFile(file)) {
-                System.err.println("File not found: " + file);
+        Path problem = Path.of(args[1]).toAbsolutePath();
+        if (!Files.isRegularFile(submission) || !Files.isDirectory(problem)) {
+            System.err.println("Submission file or problem folder not found");
+            System.exit(2);
+        }
+
+        List<Path> inputs;
+        try (var files = Files.list(problem)) {
+            inputs = files.filter(Files::isRegularFile)
+                    .filter(file -> file.getFileName().toString().endsWith(".in"))
+                    .sorted()
+                    .toList();
+        }
+        if (inputs.isEmpty()) {
+            System.err.println("No .in test files found in " + problem);
+            System.exit(2);
+        }
+        for (Path input : inputs) {
+            Path expected = expectedFor(input);
+            if (!Files.isRegularFile(expected)) {
+                System.err.println("Expected output file not found: " + expected);
                 System.exit(2);
             }
         }
@@ -47,8 +64,29 @@ public class validator {
             System.exit(1);
         }
 
-        Path actual = work.resolve("actual.out");
-        Path errors = work.resolve("runtime.err");
+        int passed = 0;
+        for (Path input : inputs) {
+            System.out.print(input.getFileName() + ": ");
+            if (runTest(work, input, expectedFor(input))) {
+                passed++;
+            }
+        }
+        System.out.println("Passed " + passed + "/" + inputs.size() + " tests");
+        if (passed != inputs.size()) {
+            System.exit(1);
+        }
+    }
+
+    private static Path expectedFor(Path input) {
+        String name = input.getFileName().toString();
+        return input.resolveSibling(name.substring(0, name.length() - 3) + ".out");
+    }
+
+    private static boolean runTest(Path work, Path input, Path expected)
+            throws IOException, InterruptedException {
+        String name = input.getFileName().toString();
+        Path actual = work.resolve(name + ".actual.out");
+        Path errors = work.resolve(name + ".runtime.err");
         Process program = new ProcessBuilder("java", "-cp", work.toString(), "Main")
                 .directory(work.toFile())
                 .redirectInput(input.toFile())
@@ -56,24 +94,25 @@ public class validator {
                 .redirectError(errors.toFile())
                 .start();
         if (!waitFor(program, RUN_TIMEOUT_SECONDS)) {
-            System.err.println("Time limit exceeded");
-            System.exit(1);
+            System.out.println("Time limit exceeded");
+            return false;
         }
         if (program.exitValue() != 0) {
-            System.err.println("Runtime error (exit " + program.exitValue() + "):");
+            System.out.println("Runtime error (exit " + program.exitValue() + "):");
             System.err.print(Files.readString(errors));
-            System.exit(1);
+            return false;
         }
 
         String expectedOutput = normalize(Files.readString(expected, StandardCharsets.UTF_8));
         String actualOutput = normalize(Files.readString(actual, StandardCharsets.UTF_8));
         if (actualOutput.equals(expectedOutput)) {
             System.out.println("Accepted");
+            return true;
         } else {
             System.out.println("Wrong answer");
             System.out.println("Expected: " + expectedOutput);
             System.out.println("Actual:   " + actualOutput);
-            System.exit(1);
+            return false;
         }
     }
 
